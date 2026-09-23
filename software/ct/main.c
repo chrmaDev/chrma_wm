@@ -4,6 +4,7 @@
 #include "cwm_protocol.h"
 #include "rendering.h"
 #include "utils/font.h"
+#include "utils/executable_path.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -17,7 +18,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
-#define CT_FONT_PATH "ctfont.qoi"
+#define CT_FONT_PATH "assets/ct_font.qoi"
 #define CT_FONT_GLYPHS \
     " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`" \
     "abcdefghijklmnopqrstuvwxyz{|}~"
@@ -666,8 +667,10 @@ int main(void)
     uint8_t *px;
     int w, h, stride;
     struct pollfd pfds[2];
+    char font_path[4096];
 
-    if (font_create(CT_FONT_PATH, &vt.f, CT_FONT_GLYPHS, 1) < 0)
+    if (executable_path(font_path, sizeof(font_path), CT_FONT_PATH) < 0 ||
+        font_create(font_path, &vt.f, CT_FONT_GLYPHS, 1) < 0)
         return 1;
 
     vt.cell_height = vt.f.height;

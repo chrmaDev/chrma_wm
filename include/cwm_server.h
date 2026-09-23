@@ -3,7 +3,10 @@
 
 #include <poll.h>
 #include <stdint.h>
-void startServer(void);
+#define CWM_MAX_PFDS 64
+
+int startServer(void);
+void protocol_cleanup(void);
 int protocol_fd(void);
 int protocol_add_pollfds(struct pollfd *dst, int cap);
 int process_new_connections(void);

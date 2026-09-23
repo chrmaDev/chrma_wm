@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -35,7 +36,36 @@ static void put_u32be(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)v;
 }
 
-static void process_message(int client_socket);
+static int process_message(int client_socket);
+
+static int clear_stale_socket(const struct sockaddr_un *addr)
+{
+    struct stat st;
+    int probe;
+    int error;
+
+    if (lstat(CWM_SOCKET_PATH, &st) < 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISSOCK(st.st_mode) || st.st_uid != geteuid()) {
+        errno = EADDRINUSE;
+        return -1;
+    }
+    probe = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    if (probe < 0)
+        return -1;
+    if (connect(probe, (const struct sockaddr *)addr, sizeof(*addr)) == 0) {
+        close(probe);
+        errno = EADDRINUSE;
+        return -1;
+    }
+    error = errno;
+    close(probe);
+    if (error != ECONNREFUSED) {
+        errno = error;
+        return -1;
+    }
+    return unlink(CWM_SOCKET_PATH);
+}
 
 int cwm_send(int socket, int type, const void *payload, uint32_t length)
 {
@@ -82,44 +112,73 @@ int cwm_send_fd(int socket, int type, const void *payload, uint32_t length, int 
         memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
     }
 
-    if (sendmsg(socket, &msg, 0) < 0) {
+    if (sendmsg(socket, &msg, MSG_NOSIGNAL) < 0) {
         perror("sendmsg");
         return -1;
     }
     return 0;
 }
 
-void startServer(void)
+int startServer(void)
 {
     struct sockaddr_un addr;
 
     server.socket = socket(AF_UNIX, SOCK_SEQPACKET, 0);
     if (server.socket == -1) {
         perror("socket");
-        return;
+        return -1;
     }
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, CWM_SOCKET_PATH, sizeof(addr.sun_path) - 1);
-    unlink(CWM_SOCKET_PATH);
+    if (clear_stale_socket(&addr) < 0) {
+        perror("socket path");
+        close(server.socket);
+        server.socket = -1;
+        return -1;
+    }
     if (bind(server.socket, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
         close(server.socket);
         server.socket = -1;
-        return;
+        return -1;
     }
     if (listen(server.socket, 10) == -1) {
         perror("listen");
         close(server.socket);
         server.socket = -1;
-        return;
+        unlink(CWM_SOCKET_PATH);
+        return -1;
     }
     fcntl(server.socket, F_SETFL, O_NONBLOCK);
 
-    vector_init(&server.client_connections, sizeof(int));
+    if (vector_init(&server.client_connections, sizeof(int)) < 0) {
+        protocol_cleanup();
+        return -1;
+    }
     server.recv_buffer = malloc(2048);
+    if (!server.recv_buffer) {
+        protocol_cleanup();
+        return -1;
+    }
     server.recv_buffer_size = 2048;
+    return 0;
+}
+
+void protocol_cleanup(void)
+{
+    for (size_t i = 0; i < server.client_connections.size; i++)
+        close(*(int *)vector_get(&server.client_connections, i));
+    vector_free(&server.client_connections);
+    free(server.recv_buffer);
+    server.recv_buffer = NULL;
+    server.recv_buffer_size = 0;
+    if (server.socket >= 0) {
+        close(server.socket);
+        server.socket = -1;
+        unlink(CWM_SOCKET_PATH);
+    }
 }
 
 int protocol_fd(void)
@@ -165,7 +224,11 @@ int process_new_connections(void)
             break;
         }
         fcntl(c, F_SETFL, O_NONBLOCK);
-        vector_push(&server.client_connections, &c);
+        if (server.client_connections.size >= CWM_MAX_PFDS - 3 ||
+            vector_push(&server.client_connections, &c) < 0) {
+            close(c);
+            continue;
+        }
         printf("new client connected: %d\n", c);
         accepted++;
     }
@@ -179,11 +242,18 @@ int process_connections(void)
 
     while (i < server.client_connections.size) {
         int c = *(int *)vector_get(&server.client_connections, i);
-        ssize_t bytes_read = recv(c, server.recv_buffer, server.recv_buffer_size, 0);
+        ssize_t bytes_read = recv(c, server.recv_buffer, server.recv_buffer_size, MSG_TRUNC);
 
         if (bytes_read > 0) {
             server.recv_len = (size_t)bytes_read;
-            process_message(c);
+            if (server.recv_len > server.recv_buffer_size ||
+                process_message(c) < 0) {
+                close(c);
+                windows_destroy_all_for_client(c);
+                vector_remove(&server.client_connections, i);
+                work = 1;
+                continue;
+            }
             work = 1;
             continue;
         }
@@ -201,36 +271,34 @@ int process_connections(void)
     return work;
 }
 
-static void process_message(int client_socket)
+static int process_message(int client_socket)
 {
     switch ((enum cwmProtocolMessageType)server.recv_buffer[0]) {
         case CWM_PRT_TYPE_GET_INFO:
+            if (server.recv_len != 1)
+                return -1;
             process_get_info(client_socket);
-            break;
+            return 0;
 
-        case CWM_PRT_TYPE_CREATE_WINDOW: {
-            process_create_window(client_socket);
-            break;
-        }
+        case CWM_PRT_TYPE_CREATE_WINDOW:
+            return process_create_window(client_socket);
 
         case CWM_PRT_TYPE_DESTROY_WINDOW:
-            process_destroy_window(client_socket);
-            break;
+            return process_destroy_window(client_socket);
 
         case CWM_PRT_TYPE_COMMIT_WINDOW:
-            process_commit_window(client_socket);
-            break;
+            return process_commit_window(client_socket);
 
         case CWM_PRT_TYPE_CREATE_WINDOW_REPLY:
         case CWM_PRT_TYPE_INPUT_EVENT:
         case CWM_PRT_TYPE_RESIZE_WINDOW:
         case CWM_PRT_TYPE_CLOSE_WINDOW:
             printf("unexpected message type from client: %d\n", server.recv_buffer[0]);
-            break;
+            return -1;
 
         default:
             printf("unknown message type: %d\n", server.recv_buffer[0]);
-            break;
+            return -1;
     }
 }
 
@@ -248,29 +316,45 @@ void process_get_info(int client_socket)
 int process_create_window(int client_socket) {
     struct window_create_request request;
     uint32_t window_id;
+    uint32_t x, y, width, height;
     uint8_t idbuf[4];
     int gfx_fd;
-    int title_length = 0;
+    size_t title_length;
+    const char *title_end;
 
-    request.rect = (rect2d){{uint32_from_buffer(server.recv_buffer + 1), uint32_from_buffer(server.recv_buffer + 5)}, {uint32_from_buffer(server.recv_buffer + 9), uint32_from_buffer(server.recv_buffer + 13)}};
-    for (size_t i = 17; i < server.recv_len && title_length < (int)sizeof(request.title) - 1; i++) {
-        if (server.recv_buffer[i] == '\0') {
-            request.title[title_length] = '\0';
-            break;
-        }
-        request.title[title_length] = server.recv_buffer[i];
-        title_length++;
-    }
+    if (server.recv_len < 22)
+        return -1;
+    title_end = memchr(server.recv_buffer + 17, '\0', server.recv_len - 17 - 4);
+    if (!title_end)
+        return -1;
+    title_length = (size_t)(title_end - (server.recv_buffer + 17));
+    if (title_length >= sizeof(request.title) || server.recv_len != 17 + title_length + 1 + 4)
+        return -1;
+    memcpy(request.title, server.recv_buffer + 17, title_length);
     request.title[title_length] = '\0';
-    
-    request.render_scale = (enum cwmRenderScale)uint32_from_buffer(server.recv_buffer + 17 + strlen(request.title) + 1);
+    request.render_scale = (enum cwmRenderScale)uint32_from_buffer(title_end + 1);
+    if (request.render_scale != CWM_RENDER_NATIVE)
+        return -1;
+
+    width = uint32_from_buffer(server.recv_buffer + 9);
+    height = uint32_from_buffer(server.recv_buffer + 13);
+    x = uint32_from_buffer(server.recv_buffer + 1);
+    y = uint32_from_buffer(server.recv_buffer + 5);
+    if (!width || !height || width > CWM_MAX_WINDOW_DIMENSION ||
+        height > CWM_MAX_WINDOW_DIMENSION ||
+        x > CWM_MAX_WINDOW_COORDINATE || y > CWM_MAX_WINDOW_COORDINATE)
+        return -1;
+    request.rect = (rect2d){{(int32_t)x, (int32_t)y},
+                            {(int32_t)width, (int32_t)height}};
 
     gfx_fd = window_create_for_client(client_socket, request.rect, request.title, &window_id);
     if (gfx_fd < 0)
         return -1;
     put_u32be(idbuf, window_id);
-    if (cwm_send_fd(client_socket, CWM_PRT_TYPE_CREATE_WINDOW_REPLY, idbuf, 4, gfx_fd) < 0)
+    if (cwm_send_fd(client_socket, CWM_PRT_TYPE_CREATE_WINDOW_REPLY, idbuf, 4, gfx_fd) < 0) {
+        window_destroy((int)window_id);
         return -1;
+    }
     return 0;
 }
 
@@ -278,20 +362,18 @@ int process_destroy_window(int client_socket)
 {
     uint32_t window_id;
 
-    (void)client_socket;
-    if (server.recv_len < 5)
+    if (server.recv_len != 5)
         return -1;
     window_id = uint32_from_buffer(server.recv_buffer + 1);
-    window_destroy((int)window_id);
-    return 0;
+    return window_destroy_for_client(client_socket, window_id);
 }
 
 int process_commit_window(int client_socket)
 {
-    (void)client_socket;
-    if (server.recv_len < 5)
+    if (server.recv_len != 5)
         return -1;
-    return 0;
+    return window_owned_by_client(client_socket,
+                                  uint32_from_buffer(server.recv_buffer + 1)) ? 0 : -1;
 }
 
 int cwm_emit_input_event(int client_socket, uint8_t type, uint32_t keycode, uint8_t down, uint8_t button, uint16_t x, uint16_t y)

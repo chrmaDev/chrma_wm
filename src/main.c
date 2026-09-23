@@ -3,6 +3,7 @@
 #include "rendering.h"
 #include "utils/imgload.h"
 #include "utils/font.h"
+#include "utils/executable_path.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -17,10 +18,8 @@
 #include "windows.h"
 #include "cwm_server.h"
 
-#define MAX_PFDS 64
-
 static struct {
-    struct pollfd pfds[MAX_PFDS];
+    struct pollfd pfds[CWM_MAX_PFDS];
     int npfds;
     pixmap canvas;
     pixmap image;
@@ -61,7 +60,7 @@ static int rebuild_pollfds(void)
     app.pfds[n].events = POLLIN;
     app.pfds[n].revents = 0;
     n++;
-    n += protocol_add_pollfds(app.pfds + n, MAX_PFDS - n);
+    n += protocol_add_pollfds(app.pfds + n, CWM_MAX_PFDS - n);
     app.npfds = n;
     return n;
 }
@@ -161,10 +160,16 @@ static void dump_screenshot(const pixmap *p)
     free(zbuf);
 }
 
-static void spawn_test_client(void)
+static void spawn_terminal(void)
 {
     pid_t pid;
     int fd;
+    char path[4096];
+
+    if (executable_path(path, sizeof(path), "ct") < 0) {
+        fprintf(stderr, "cannot locate ct beside the window manager\n");
+        return;
+    }
 
     pid = fork();
     if (pid < 0) {
@@ -176,33 +181,45 @@ static void spawn_test_client(void)
 
     for (fd = 3; fd < 256; fd++)
         close(fd);
-    execl("build/ct", "ct", (char *)NULL);
+    execl(path, "ct", (char *)NULL);
     _exit(1);
 }
 
 int init() {
 
     pixmap *screen;
+    char path[4096];
 
     if (windows_init() < 0)
         return 1;
 
-    if (!load_qoi("window_tests.qoi", &app.window_atlas)) {
+    if (executable_path(path, sizeof(path), "assets/window_atlas.qoi") < 0 ||
+        !load_qoi(path, &app.window_atlas)) {
         printf("Failed to load window atlas\n");
         return 1;
     }
 
-    if (!load_qoi("test.qoi", &app.image)) {
+    if (executable_path(path, sizeof(path), "assets/background.qoi") < 0 ||
+        !load_qoi(path, &app.image)) {
         printf("Failed to load image\n");
         return 1;
     }
 
-    font_create("font.qoi", &app.f, " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 0);
-
-    if (kms_init() < 0)
+    if (executable_path(path, sizeof(path), "assets/ui_font.qoi") < 0 ||
+        font_create(path, &app.f, " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 0) < 0) {
+        fprintf(stderr, "Failed to load UI font\n");
         return 1;
+    }
+
+    if (startServer() < 0)
+        return 1;
+    if (kms_init() < 0) {
+        protocol_cleanup();
+        return 1;
+    }
     if (input_init() < 0) {
         kms_cleanup();
+        protocol_cleanup();
         return 1;
     }
 
@@ -216,13 +233,13 @@ int init() {
         fprintf(stderr, "canvas alloc failed\n");
         input_cleanup();
         kms_cleanup();
+        protocol_cleanup();
         return 1;
     }
 
     app.dirty = 1;
     app.running = 1;
 
-    startServer();
     rebuild_pollfds();
 
     return 0;
@@ -261,7 +278,7 @@ static void update(void)
         return;
     }
     if (input_spawn_requested())
-        spawn_test_client();
+        spawn_terminal();
 
     ptr = input_pointer();
     {
@@ -332,7 +349,7 @@ static void draw(void)
 
 int main(void)
 {
-    if (init() < 0) {
+    if (init() != 0) {
         printf("Failed to initialize\n");
         return 1;
     }
@@ -360,6 +377,7 @@ int main(void)
     free(app.image.data);
     font_destroy(&app.f);
     windows_cleanup();
+    protocol_cleanup();
     input_cleanup();
     kms_cleanup();
     return 0;

@@ -278,6 +278,20 @@ void window_destroy(int window_id)
     }
 }
 
+int window_owned_by_client(int client_fd, uint32_t window_id)
+{
+    window *w = window_by_id(window_id);
+    return w && w->fd == client_fd;
+}
+
+int window_destroy_for_client(int client_fd, uint32_t window_id)
+{
+    if (!window_owned_by_client(client_fd, window_id))
+        return -1;
+    window_destroy((int)window_id);
+    return 0;
+}
+
 void windows_destroy_all_for_client(int client_fd)
 {
     size_t i = 0;

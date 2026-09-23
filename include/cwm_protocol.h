@@ -5,6 +5,8 @@
 #include "types.h"
 #define CWM_PROTOCOL_VERSION 1
 #define CWM_SOCKET_PATH "/tmp/cwm.sock"
+#define CWM_MAX_WINDOW_DIMENSION 4096
+#define CWM_MAX_WINDOW_COORDINATE 32767
 
 enum cwmInputEventType {
     CWM_INPUT_EVENT_TYPE_MOUSE = 0,

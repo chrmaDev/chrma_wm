@@ -29,5 +29,7 @@ void windows_handle_resize(int window_id, rect2d bounds);
 void windows_draw(pixmap *dst, font *f, pixmap *atlas);
 int window_create_for_client(int client_fd, rect2d bounds, char *title, uint32_t *window_id);
 void window_destroy(int window_id);
+int window_destroy_for_client(int client_fd, uint32_t window_id);
+int window_owned_by_client(int client_fd, uint32_t window_id);
 void windows_destroy_all_for_client(int client_fd);
 #endif
