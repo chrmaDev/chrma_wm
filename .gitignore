@@ -1,0 +1,30 @@
+# build artifacts
+/build/
+*.o
+*.o.d
+*.d
+
+# clangd / editors
+.cache/
+.clangd/
+compile_commands.json
+.vscode/
+
+# vim/swp junk
+*.swp
+*~
+
+# generated image dumps
+cwm.ppm
+/test.ase
+/test.qoi
+# only ppm and qoi are useful
+*.ase
+*.aseprite
+*.bmp
+*.png
+
+/x11-wm-cheatsheet.md
+/x11-wm-study-guide.md
+/x11rb-wm-api-guide.md
+/welcome.qoi

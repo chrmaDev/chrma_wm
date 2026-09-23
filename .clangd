@@ -1,0 +1,5 @@
+# Headers opened on their own default to C++. This project is C.
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Add: [-xc, -std=c99, -D_GNU_SOURCE, -Iinclude]
