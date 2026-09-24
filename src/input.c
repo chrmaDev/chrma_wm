@@ -17,6 +17,16 @@ struct key_event {
     uint8_t down;
 };
 
+enum sticky_mode { STICKY_OFF, STICKY_LATCHED, STICKY_LOCKED };
+
+struct sticky_modifier {
+    uint32_t keycode;
+    uint32_t active_for;
+    enum sticky_mode mode;
+    uint8_t physical_down;
+    uint8_t used;
+};
+
 static struct {
     struct udev *udev;
     struct libinput *li;
@@ -25,6 +35,9 @@ static struct {
     struct xkb_state *xkb_state;
     Vector key_events;
     pointer_state pointer;
+    double scroll_remainder_x;
+    double scroll_remainder_y;
+    struct sticky_modifier sticky[3];
     int quit;
     int spawn;
     int screenshot;
@@ -97,17 +110,87 @@ static void handle_button(struct libinput_event *event)
         g.pointer.buttons &= (uint8_t)~bit;
 }
 
+static void handle_scroll(struct libinput_event *event)
+{
+    struct libinput_event_pointer *pt = libinput_event_get_pointer_event(event);
+    enum libinput_event_type type = libinput_event_get_type(event);
+    const enum libinput_pointer_axis axes[2] = {
+        LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL,
+        LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL,
+    };
+    double *remainders[2] = { &g.scroll_remainder_x, &g.scroll_remainder_y };
+    int16_t *steps[2] = { &g.pointer.scroll_x, &g.pointer.scroll_y };
+
+    for (int i = 0; i < 2; i++) {
+        double movement;
+        int whole;
+
+        if (!libinput_event_pointer_has_axis(pt, axes[i]))
+            continue;
+        if (type == LIBINPUT_EVENT_POINTER_SCROLL_WHEEL)
+            movement = libinput_event_pointer_get_scroll_value_v120(pt, axes[i]) / 120.0;
+        else
+            movement = libinput_event_pointer_get_scroll_value(pt, axes[i]) / 20.0;
+        *remainders[i] -= movement; /* libinput: down/right positive; raylib: up/left positive */
+        whole = (int)*remainders[i];
+        *remainders[i] -= whole;
+        *steps[i] += (int16_t)whole;
+    }
+}
+
+static void queue_key(uint32_t keycode, uint8_t down)
+{
+    struct key_event event = { keycode, down };
+    vector_push(&g.key_events, &event);
+}
+
+static int sticky_index(xkb_keysym_t sym)
+{
+    if (sym == XKB_KEY_Shift_L || sym == XKB_KEY_Shift_R) return 0;
+    if (sym == XKB_KEY_Control_L || sym == XKB_KEY_Control_R) return 1;
+    if (sym == XKB_KEY_Alt_L || sym == XKB_KEY_Alt_R) return 2;
+    return -1;
+}
+
 static void handle_key(struct libinput_event *event)
 {
-    struct key_event key_event;
     struct libinput_event_keyboard *kb = libinput_event_get_keyboard_event(event);
     uint32_t keycode = libinput_event_keyboard_get_key(kb) + 8;
     enum libinput_key_state ks = libinput_event_keyboard_get_key_state(kb);
     enum xkb_key_direction dir = (ks == LIBINPUT_KEY_STATE_PRESSED) ? XKB_KEY_DOWN : XKB_KEY_UP;
     xkb_keysym_t sym;
+    int modifier;
 
     xkb_state_update_key(g.xkb_state, keycode, dir);
     sym = xkb_state_key_get_one_sym(g.xkb_state, keycode);
+    modifier = sticky_index(sym);
+
+    if (modifier >= 0) {
+        struct sticky_modifier *sticky = &g.sticky[modifier];
+        if (dir == XKB_KEY_DOWN) {
+            sticky->physical_down = 1;
+            sticky->used = 0;
+            sticky->keycode = keycode;
+        }
+        queue_key(keycode, dir == XKB_KEY_DOWN);
+        if (dir == XKB_KEY_UP) {
+            sticky->physical_down = 0;
+            if (!sticky->used)
+                sticky->mode = (enum sticky_mode)((sticky->mode + 1) % 3);
+        }
+        return;
+    }
+
+    if (dir == XKB_KEY_DOWN) {
+        for (int i = 0; i < 3; i++) {
+            struct sticky_modifier *sticky = &g.sticky[i];
+            if (sticky->physical_down) sticky->used = 1;
+            if (sticky->mode != STICKY_OFF && !sticky->physical_down && !sticky->active_for) {
+                queue_key(sticky->keycode, 1);
+                sticky->active_for = keycode;
+            }
+        }
+    }
 
     if (sym == XKB_KEY_BackSpace
         && xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
@@ -116,22 +199,31 @@ static void handle_key(struct libinput_event *event)
                                         XKB_STATE_MODS_EFFECTIVE) > 0) {
         if (ks == LIBINPUT_KEY_STATE_PRESSED)
             g.quit = 1;
-        return;
+        goto finish;
     }
     if (sym == XKB_KEY_Super_L || sym == XKB_KEY_Super_R) {
         if (ks == LIBINPUT_KEY_STATE_PRESSED)
             g.spawn = 1;
-        return;
+        goto finish;
     }
     if (sym == XKB_KEY_F12 || sym == XKB_KEY_Print) {
         if (ks == LIBINPUT_KEY_STATE_PRESSED)
             g.screenshot = 1;
-        return;
+        goto finish;
     }
 
-    key_event.keycode = keycode;
-    key_event.down = (ks == LIBINPUT_KEY_STATE_PRESSED);
-    vector_push(&g.key_events, &key_event);
+    queue_key(keycode, dir == XKB_KEY_DOWN);
+
+finish:
+    if (dir == XKB_KEY_UP) {
+        for (int i = 0; i < 3; i++) {
+            struct sticky_modifier *sticky = &g.sticky[i];
+            if (sticky->active_for != keycode) continue;
+            queue_key(sticky->keycode, 0);
+            sticky->active_for = 0;
+            if (sticky->mode == STICKY_LATCHED) sticky->mode = STICKY_OFF;
+        }
+    }
 }
 
 static void handle_device_added(struct libinput_event *event)
@@ -217,6 +309,11 @@ int input_dispatch(void)
         case LIBINPUT_EVENT_POINTER_BUTTON:
             handle_button(event);
             break;
+        case LIBINPUT_EVENT_POINTER_SCROLL_WHEEL:
+        case LIBINPUT_EVENT_POINTER_SCROLL_FINGER:
+        case LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS:
+            handle_scroll(event);
+            break;
         case LIBINPUT_EVENT_KEYBOARD_KEY:
             handle_key(event);
             break;
@@ -240,6 +337,8 @@ void input_consume_motion(void)
 {
     g.pointer.dx = 0;
     g.pointer.dy = 0;
+    g.pointer.scroll_x = 0;
+    g.pointer.scroll_y = 0;
 }
 
 int input_quit_requested(void)

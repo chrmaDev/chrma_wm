@@ -44,6 +44,7 @@
 **********************************************************************************************/
 
 #include "cwm_client.h"
+#include "cwm_raylib_input.h"
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -63,6 +64,9 @@ typedef struct {
     struct xkb_keymap *xkbKeymap;
     struct xkb_state *xkbState;
     int heldKeys[512];
+    cwm_raylib_key_event keyEvents[128];
+    int keyEventCount;
+    int keyEventRead;
 #if defined(_WIN32)
     LARGE_INTEGER timerFrequency;
 #endif
@@ -74,6 +78,13 @@ typedef struct {
 extern CoreData CORE;                   // Global CORE state context
 
 static PlatformData platform = { 0 };   // Platform specific data
+
+int cwm_raylib_next_key_event(cwm_raylib_key_event *event)
+{
+    if (!event || platform.keyEventRead >= platform.keyEventCount) return 0;
+    *event = platform.keyEvents[platform.keyEventRead++];
+    return 1;
+}
 
 //----------------------------------------------------------------------------------
 // Module Internal Functions Declaration
@@ -440,6 +451,7 @@ static int RaylibKey(xkb_keysym_t sym)
         case XKB_KEY_space: return KEY_SPACE;
         case XKB_KEY_Escape: return KEY_ESCAPE;
         case XKB_KEY_Return: return KEY_ENTER;
+        case XKB_KEY_KP_Enter: return KEY_KP_ENTER;
         case XKB_KEY_Tab: return KEY_TAB;
         case XKB_KEY_BackSpace: return KEY_BACKSPACE;
         case XKB_KEY_Insert: return KEY_INSERT;
@@ -489,6 +501,7 @@ void PollInputEvents(void)
     // Reset keys/chars pressed registered
     CORE.Input.Keyboard.keyPressedQueueCount = 0;
     CORE.Input.Keyboard.charPressedQueueCount = 0;
+    platform.keyEventCount = platform.keyEventRead = 0;
 
     // Reset key repeats
     for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
@@ -515,6 +528,7 @@ void PollInputEvents(void)
 
     CORE.Window.resizedLastFrame = false;
     CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
+    CORE.Input.Mouse.currentWheelMove = (Vector2){0};
     for (int i = 0; i < MAX_MOUSE_BUTTONS; i++)
         CORE.Input.Mouse.previousButtonState[i] = CORE.Input.Mouse.currentButtonState[i];
 
@@ -536,6 +550,11 @@ void PollInputEvents(void)
             CORE.Input.Mouse.currentPosition = (Vector2){ (float)event.x, (float)event.y };
             if (event.type == CWM_INPUT_EVENT_TYPE_MOUSE)
                 CORE.Input.Mouse.currentButtonState[MOUSE_BUTTON_LEFT] = event.down;
+        }
+        else if (event.type == CWM_INPUT_EVENT_TYPE_MOUSE_WHEEL)
+        {
+            if (event.button == 1) CORE.Input.Mouse.currentWheelMove.x += (float)(int32_t)event.keycode;
+            else CORE.Input.Mouse.currentWheelMove.y += (float)(int32_t)event.keycode;
         }
         else if (event.type == CWM_INPUT_EVENT_TYPE_KEYBOARD && platform.xkbState && event.keycode < 512)
         {
@@ -559,8 +578,24 @@ void PollInputEvents(void)
             if (event.down)
             {
                 uint32_t ch = xkb_state_key_get_utf32(platform.xkbState, event.keycode);
-                if (ch >= 32 && CORE.Input.Keyboard.charPressedQueueCount < MAX_CHAR_PRESSED_QUEUE)
+                int text = (ch >= 32 && ch != 127) ||
+                           (ch >= 1 && ch <= 26 && key >= KEY_A && key <= KEY_Z);
+                unsigned int modifiers = 0;
+
+                if (xkb_state_mod_name_is_active(platform.xkbState, XKB_MOD_NAME_SHIFT,
+                        XKB_STATE_MODS_EFFECTIVE) > 0) modifiers |= CWM_KEY_SHIFT;
+                if (xkb_state_mod_name_is_active(platform.xkbState, XKB_MOD_NAME_CTRL,
+                        XKB_STATE_MODS_EFFECTIVE) > 0) modifiers |= CWM_KEY_CONTROL;
+                if (xkb_state_mod_name_is_active(platform.xkbState, XKB_MOD_NAME_ALT,
+                        XKB_STATE_MODS_EFFECTIVE) > 0) modifiers |= CWM_KEY_ALT;
+                if (platform.keyEventCount < 128)
+                    platform.keyEvents[platform.keyEventCount++] = (cwm_raylib_key_event){
+                        key, text ? (int)ch : 0, modifiers };
+                if (ch >= 32 && ch != 127 &&
+                    CORE.Input.Keyboard.charPressedQueueCount < MAX_CHAR_PRESSED_QUEUE)
+                {
                     CORE.Input.Keyboard.charPressedQueue[CORE.Input.Keyboard.charPressedQueueCount++] = (int)ch;
+                }
             }
             else platform.heldKeys[event.keycode] = 0;
         }

@@ -24,6 +24,7 @@
 int windows_init(void);
 void windows_cleanup(void);
 void windows_handle_pointer(point2d pos, int pressed, int released);
+void windows_handle_wheel(point2d pos, int horizontal, int vertical);
 void windows_handle_keyboard(uint32_t keycode, uint8_t down);
 void windows_handle_resize(int window_id, rect2d bounds);
 void windows_draw(pixmap *dst, font *f, pixmap *atlas);

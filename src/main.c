@@ -166,8 +166,8 @@ static void spawn_terminal(void)
     int fd;
     char path[4096];
 
-    if (executable_path(path, sizeof(path), "ct") < 0) {
-        fprintf(stderr, "cannot locate ct beside the window manager\n");
+    if (executable_path(path, sizeof(path), "ai/ct") < 0 || access(path, X_OK) < 0) {
+        fprintf(stderr, "cannot launch raylib ct; build it with make -C software/ai\n");
         return;
     }
 
@@ -304,6 +304,8 @@ static void update(void)
     windows_handle_pointer(app.pos,
                            button_pressed(BUTTON_LEFT),
                            button_released(BUTTON_LEFT));
+    if (ptr.scroll_x || ptr.scroll_y)
+        windows_handle_wheel(app.pos, ptr.scroll_x, ptr.scroll_y);
 
     {
         uint32_t key;

@@ -527,6 +527,20 @@ void windows_handle_pointer(point2d pos, int pressed, int released)
     }
 }
 
+void windows_handle_wheel(point2d pos, int horizontal, int vertical)
+{
+    window *w = window_at_point(pos, NULL);
+
+    if (!w || w->minimized || !rect_contains(window_client_rect(w), pos))
+        return;
+    if (horizontal)
+        cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_MOUSE_WHEEL,
+                             (uint32_t)(int32_t)horizontal, 0, 1, 0, 0);
+    if (vertical)
+        cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_MOUSE_WHEEL,
+                             (uint32_t)(int32_t)vertical, 0, 0, 0, 0);
+}
+
 void windows_handle_keyboard(uint32_t keycode, uint8_t down)
 {
     window *w = window_by_id(wm.focused);

@@ -12,7 +12,7 @@ SRCS = src/main.c src/kms.c src/rendering.c src/input.c src/windows.c \
 OBJS = $(patsubst %.c,$(BUILD)/%.o,$(SRCS))
 DEPS = $(OBJS:.o=.d)
 
-CT_SRCS = software/ct/main.c src/cwm_client.c src/rendering.c \
+CT_SRCS = software/ct/main.c software/ct/terminal.c src/cwm_client.c src/rendering.c \
 	src/utils/font.c src/utils/imgload.c src/utils/executable_path.c
 CT_OBJS = $(patsubst %.c,$(BUILD)/%.o,$(CT_SRCS))
 CT_DEPS = $(CT_OBJS:.o=.d)
