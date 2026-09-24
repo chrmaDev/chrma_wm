@@ -383,6 +383,20 @@ static void emit_mouse(window *w, point2d pos, uint8_t down)
                          (uint16_t)x, (uint16_t)y);
 }
 
+static void emit_mouse_move(window *w, point2d pos)
+{
+    rect2d c = window_client_rect(w);
+    int32_t x = pos.x - c.pos.x;
+    int32_t y = pos.y - c.pos.y;
+
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= c.size.width) x = c.size.width - 1;
+    if (y >= c.size.height) y = c.size.height - 1;
+    cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_MOUSE_MOVE, 0, 0, 0,
+                         (uint16_t)x, (uint16_t)y);
+}
+
 static void resize_preview_from_point(window *w, point2d pos)
 {
     int32_t width = pos.x - w->bounds.pos.x;
@@ -433,6 +447,7 @@ void windows_handle_resize(int window_id, rect2d bounds)
 void windows_handle_pointer(point2d pos, int pressed, int released)
 {
     window *w;
+    static point2d last_pos = { -1, -1 };
 
     if (pressed) {
         size_t i;
@@ -502,10 +517,13 @@ void windows_handle_pointer(point2d pos, int pressed, int released)
         w = window_by_id(wm.grabbed);
         if (w)
             resize_preview_from_point(w, pos);
-    } else if (wm.grab_kind == GRAB_CLIENT && !pressed) {
-        w = window_by_id(wm.grabbed);
-        if (w)
-            emit_mouse(w, pos, 1);
+    }
+
+    if (pos.x != last_pos.x || pos.y != last_pos.y) {
+        w = wm.grab_kind == GRAB_CLIENT ? window_by_id(wm.grabbed) : window_at_point(pos, NULL);
+        if (w && !w->minimized && rect_contains(window_client_rect(w), pos))
+            emit_mouse_move(w, pos);
+        last_pos = pos;
     }
 }
 

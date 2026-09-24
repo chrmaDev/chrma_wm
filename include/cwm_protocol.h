@@ -12,6 +12,7 @@ enum cwmInputEventType {
     CWM_INPUT_EVENT_TYPE_MOUSE = 0,
     CWM_INPUT_EVENT_TYPE_KEYBOARD = 1,
     CWM_INPUT_EVENT_TYPE_RESIZE = 2,
+    CWM_INPUT_EVENT_TYPE_MOUSE_MOVE = 3,
 };
 
 enum cwmRenderScale {
