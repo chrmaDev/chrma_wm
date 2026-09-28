@@ -18,6 +18,7 @@ static struct {
     int width;
     int height;
     uint32_t window_id;
+    char clipboard[CWM_CLIPBOARD_MAX];
 } g = {
     .sock = -1,
     .buf_fd = -1,
@@ -60,26 +61,35 @@ static int recv_record(uint8_t *type, void *payload, uint32_t cap, uint32_t *len
     ssize_t n;
     uint32_t len;
 
-    memset(&msg, 0, sizeof(msg));
-    memset(&u, 0, sizeof(u));
-    iov.iov_base = buf;
-    iov.iov_len = sizeof(buf);
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    if (out_fd) {
-        msg.msg_control = u.cmsgbuf;
-        msg.msg_controllen = sizeof(u.cmsgbuf);
-    }
+    for (;;) {
+        memset(&msg, 0, sizeof(msg));
+        memset(&u, 0, sizeof(u));
+        iov.iov_base = buf;
+        iov.iov_len = sizeof(buf);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        if (out_fd) {
+            msg.msg_control = u.cmsgbuf;
+            msg.msg_controllen = sizeof(u.cmsgbuf);
+        }
 
-    n = recvmsg(g.sock, &msg, 0);
-    if (n < CWM_HDR_SIZE) {
-        perror("recvmsg");
-        return -1;
+        n = recvmsg(g.sock, &msg, 0);
+        if (n < CWM_HDR_SIZE) {
+            perror("recvmsg");
+            return -1;
+        }
+        *type = buf[0];
+        len = get_u32be(buf + 1);
+        if ((size_t)n != CWM_HDR_SIZE + (size_t)len)
+            return -1;
+        if (*type != CWM_PRT_TYPE_CLIPBOARD_UPDATE)
+            break;
+        if (len < 1 || len > CWM_CLIPBOARD_MAX ||
+            buf[CWM_HDR_SIZE + len - 1] != '\0')
+            return -1;
+        memcpy(g.clipboard, buf + CWM_HDR_SIZE, len);
     }
-    *type = buf[0];
-    len = get_u32be(buf + 1);
-    if (len > cap || (size_t)n != CWM_HDR_SIZE + (size_t)len)
-        return -1;
+    if (len > cap) return -1;
     if (length)
         *length = len;
     if (len && payload)
@@ -145,6 +155,7 @@ int cwm_client_connect(void)
 
     if (g.sock >= 0)
         cwm_client_disconnect();
+    g.clipboard[0] = '\0';
 
     g.sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
     if (g.sock < 0) {
@@ -258,6 +269,63 @@ int cwm_request_commit_window(int window_id)
     return send_bytes(msg, sizeof(msg));
 }
 
+int cwm_request_set_title(int window_id, const char *title)
+{
+    uint8_t msg[5 + 256];
+    size_t len;
+
+    if (window_id <= 0 || !title) return -1;
+    len = strlen(title);
+    if (len > 255) return -1;
+    msg[0] = CWM_PRT_TYPE_SET_WINDOW_TITLE;
+    put_u32be(msg + 1, (uint32_t)window_id);
+    memcpy(msg + 5, title, len + 1);
+    return send_bytes(msg, 5 + len + 1);
+}
+
+int cwm_request_set_size(int window_id, int width, int height)
+{
+    uint8_t msg[13];
+
+    if (window_id <= 0 || width <= 0 || height <= 0) return -1;
+    msg[0] = CWM_PRT_TYPE_SET_WINDOW_SIZE;
+    put_u32be(msg + 1, (uint32_t)window_id);
+    put_u32be(msg + 5, (uint32_t)width);
+    put_u32be(msg + 9, (uint32_t)height);
+    return send_bytes(msg, sizeof(msg));
+}
+
+int cwm_request_set_state(int window_id, enum cwmWindowState state)
+{
+    uint8_t msg[6];
+
+    if (window_id <= 0 || state > CWM_WINDOW_FULLSCREEN) return -1;
+    msg[0] = CWM_PRT_TYPE_SET_WINDOW_STATE;
+    put_u32be(msg + 1, (uint32_t)window_id);
+    msg[5] = (uint8_t)state;
+    return send_bytes(msg, sizeof(msg));
+}
+
+int cwm_client_set_clipboard(const char *text)
+{
+    uint8_t msg[1 + CWM_CLIPBOARD_MAX];
+    size_t len;
+
+    if (!text) return -1;
+    len = strlen(text);
+    if (len >= CWM_CLIPBOARD_MAX) return -1;
+    msg[0] = CWM_PRT_TYPE_SET_CLIPBOARD;
+    memcpy(msg + 1, text, len + 1);
+    if (send_bytes(msg, len + 2) < 0) return -1;
+    memcpy(g.clipboard, text, len + 1);
+    return 0;
+}
+
+const char *cwm_client_get_clipboard(void)
+{
+    return g.clipboard;
+}
+
 int cwm_request_get_info(struct get_info_response *out)
 {
     uint8_t type = CWM_PRT_TYPE_GET_INFO;
@@ -357,6 +425,13 @@ int cwm_client_poll_event(struct input_event *out)
                 return -1;
             memcpy(out, buf + CWM_HDR_SIZE, sizeof(*out));
             return 1;
+        }
+        if (type == CWM_PRT_TYPE_CLIPBOARD_UPDATE) {
+            if (len < 1 || len > CWM_CLIPBOARD_MAX ||
+                buf[CWM_HDR_SIZE + len - 1] != '\0')
+                return -1;
+            memcpy(g.clipboard, buf + CWM_HDR_SIZE, len);
+            continue;
         }
         if (type == CWM_PRT_TYPE_CLOSE_WINDOW) {
             memset(out, 0, sizeof(*out));

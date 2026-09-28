@@ -73,7 +73,9 @@ static int send_mouse(int button, int down, int cell_width, int cell_height)
 
 static int send_input(int cell_width, int cell_height)
 {
+#ifndef WAYLAND_RAYLIB_BACKEND
     cwm_raylib_key_event event;
+#endif
     int changed = 0;
     int sent = 0;
     float wheel = GetMouseWheelMove();
@@ -83,12 +85,50 @@ static int send_input(int cell_width, int cell_height)
             send_mouse(0, 1, cell_width, cell_height);
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
             send_mouse(0, 0, cell_width, cell_height);
+        if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE))
+            send_mouse(1, 1, cell_width, cell_height);
+        if (IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE))
+            send_mouse(1, 0, cell_width, cell_height);
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT))
+            send_mouse(2, 1, cell_width, cell_height);
+        if (IsMouseButtonReleased(MOUSE_BUTTON_RIGHT))
+            send_mouse(2, 0, cell_width, cell_height);
         for (int i = 0; i < (int)wheel; i++)
             send_mouse(64, 1, cell_width, cell_height);
         for (int i = 0; i > (int)wheel; i--)
             send_mouse(65, 1, cell_width, cell_height);
     } else if (wheel != 0) changed |= terminal_scroll((int)(wheel * 3));
 
+#ifdef WAYLAND_RAYLIB_BACKEND
+    unsigned int modifiers = 0;
+    int key;
+    if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) modifiers |= CWM_KEY_SHIFT;
+    if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) modifiers |= CWM_KEY_CONTROL;
+    if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) modifiers |= CWM_KEY_ALT;
+    while ((key = GetKeyPressed()) != 0) {
+        if ((modifiers & CWM_KEY_SHIFT) && key == KEY_PAGE_UP)
+            changed |= terminal_scroll(term.rows - 1);
+        else if ((modifiers & CWM_KEY_SHIFT) && key == KEY_PAGE_DOWN)
+            changed |= terminal_scroll(1 - term.rows);
+        else if ((modifiers & CWM_KEY_SHIFT) && key == KEY_END)
+            changed |= terminal_scroll_bottom();
+        else if (send_key(key, modifiers))
+            sent = 1;
+        else if ((modifiers & CWM_KEY_CONTROL) && key >= KEY_A && key <= KEY_Z) {
+            char control = (char)(key - KEY_A + 1);
+            if (modifiers & CWM_KEY_ALT) send_bytes("\033", 1);
+            sent |= send_bytes(&control, 1);
+        }
+    }
+    for (int codepoint; (codepoint = GetCharPressed()) != 0;) {
+        int length;
+        if (codepoint < 32 || codepoint == 127 || (modifiers & CWM_KEY_CONTROL))
+            continue;
+        const char *utf8 = CodepointToUTF8(codepoint, &length);
+        if (modifiers & CWM_KEY_ALT) send_bytes("\033", 1);
+        sent |= send_bytes(utf8, (size_t)length);
+    }
+#else
     while (cwm_raylib_next_key_event(&event)) {
         if ((event.modifiers & CWM_KEY_SHIFT) && event.key == KEY_PAGE_UP)
             changed |= terminal_scroll(term.rows - 1);
@@ -106,6 +146,7 @@ static int send_input(int cell_width, int cell_height)
             sent |= send_bytes(utf8, (size_t)length);
         }
     }
+#endif
     if (sent) changed |= terminal_scroll_bottom();
     return changed;
 }
@@ -167,7 +208,12 @@ int main(void)
 
     setlocale(LC_CTYPE, "");
 
+#ifdef WAYLAND_RAYLIB_BACKEND
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    InitWindow(CT_COLS * 12, CT_ROWS * 18, "ChrmaTerm raylib");
+#else
     InitWindow(CT_COLS * 4, CT_ROWS * 6, "ChrmaTerm raylib");
+#endif
     if (!IsWindowReady()) return 1;
     SetExitKey(KEY_NULL);
     if (executable_path(font_path, sizeof(font_path), "assets/ct_font.qoi") < 0) {
@@ -186,6 +232,21 @@ int main(void)
         CloseWindow();
         return 1;
     }
+#ifdef WAYLAND_RAYLIB_BACKEND
+    int monitor = GetCurrentMonitor();
+    int available_width = GetMonitorWidth(monitor) * 4 / 5;
+    int available_height = GetMonitorHeight(monitor) * 4 / 5;
+    int scale = 1;
+
+    if (available_width > 0 && available_height > 0) {
+        while (scale < 8 && CT_COLS * cell_width * (scale + 1) <= available_width &&
+               CT_ROWS * cell_height * (scale + 1) <= available_height)
+            scale++;
+    } else scale = 3;
+    cell_width *= scale;
+    cell_height *= scale;
+    SetWindowSize(CT_COLS * cell_width, CT_ROWS * cell_height);
+#endif
 
     child = forkpty(&master_fd, NULL, NULL, NULL);
     if (child < 0) {
@@ -230,7 +291,11 @@ int main(void)
         }
 
         BeginDrawing();
+#ifdef WAYLAND_RAYLIB_BACKEND
+        draw_terminal(font, cell_width, cell_height);
+#else
         if (dirty) draw_terminal(font, cell_width, cell_height);
+#endif
         EndDrawing();
         dirty = 0;
     }

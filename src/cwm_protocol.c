@@ -20,6 +20,7 @@ static struct {
     char *recv_buffer;
     size_t recv_buffer_size;
     size_t recv_len;
+    char clipboard[CWM_CLIPBOARD_MAX];
 } server = { .socket = -1 };
 
 static uint32_t uint32_from_buffer(const char *buffer)
@@ -289,10 +290,48 @@ static int process_message(int client_socket)
         case CWM_PRT_TYPE_COMMIT_WINDOW:
             return process_commit_window(client_socket);
 
+        case CWM_PRT_TYPE_SET_WINDOW_TITLE: {
+            uint32_t id;
+            size_t text_len;
+            if (server.recv_len < 6 || server.recv_len > 5 + 256)
+                return -1;
+            id = uint32_from_buffer(server.recv_buffer + 1);
+            text_len = server.recv_len - 5;
+            if (server.recv_buffer[server.recv_len - 1] != '\0' ||
+                memchr(server.recv_buffer + 5, '\0', text_len - 1))
+                return -1;
+            return window_set_title(client_socket, id, server.recv_buffer + 5);
+        }
+
+        case CWM_PRT_TYPE_SET_WINDOW_SIZE:
+            if (server.recv_len != 13) return -1;
+            return window_set_size(client_socket, uint32_from_buffer(server.recv_buffer + 1),
+                                   uint32_from_buffer(server.recv_buffer + 5),
+                                   uint32_from_buffer(server.recv_buffer + 9));
+
+        case CWM_PRT_TYPE_SET_WINDOW_STATE:
+            if (server.recv_len != 6) return -1;
+            return window_set_state(client_socket, uint32_from_buffer(server.recv_buffer + 1),
+                                    (enum cwmWindowState)(uint8_t)server.recv_buffer[5]);
+
+        case CWM_PRT_TYPE_SET_CLIPBOARD:
+            if (server.recv_len < 2 || server.recv_len > 1 + CWM_CLIPBOARD_MAX ||
+                server.recv_buffer[server.recv_len - 1] != '\0' ||
+                memchr(server.recv_buffer + 1, '\0', server.recv_len - 2))
+                return -1;
+            memcpy(server.clipboard, server.recv_buffer + 1, server.recv_len - 1);
+            for (size_t i = 0; i < server.client_connections.size; i++) {
+                int fd = *(int *)vector_get(&server.client_connections, i);
+                cwm_send(fd, CWM_PRT_TYPE_CLIPBOARD_UPDATE,
+                         server.clipboard, (uint32_t)(server.recv_len - 1));
+            }
+            return 0;
+
         case CWM_PRT_TYPE_CREATE_WINDOW_REPLY:
         case CWM_PRT_TYPE_INPUT_EVENT:
         case CWM_PRT_TYPE_RESIZE_WINDOW:
         case CWM_PRT_TYPE_CLOSE_WINDOW:
+        case CWM_PRT_TYPE_CLIPBOARD_UPDATE:
             printf("unexpected message type from client: %d\n", server.recv_buffer[0]);
             return -1;
 
@@ -351,10 +390,13 @@ int process_create_window(int client_socket) {
     if (gfx_fd < 0)
         return -1;
     put_u32be(idbuf, window_id);
+    cwm_send(client_socket, CWM_PRT_TYPE_CLIPBOARD_UPDATE,
+             server.clipboard, (uint32_t)strlen(server.clipboard) + 1);
     if (cwm_send_fd(client_socket, CWM_PRT_TYPE_CREATE_WINDOW_REPLY, idbuf, 4, gfx_fd) < 0) {
         window_destroy((int)window_id);
         return -1;
     }
+    cwm_emit_input_event(client_socket, CWM_INPUT_EVENT_TYPE_FOCUS, 0, 1, 0, 0, 0);
     return 0;
 }
 

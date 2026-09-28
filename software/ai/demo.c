@@ -33,7 +33,7 @@ int main(void)
         DrawCircleV(mouse, IsMouseButtonDown(MOUSE_BUTTON_LEFT) ? 24 : 12,
                     IsMouseButtonDown(MOUSE_BUTTON_LEFT) ? ORANGE : SKYBLUE);
         DrawTextEx(font, TextFormat("fps: %d", GetFPS()), (Vector2){0, 0}, 12, 0, GREEN);
-        DrawTextEx(font, "raylib software renderer -> CWM", (Vector2){32, 35}, 18, 0, WHITE);
+        DrawTextEx(font, "raylib demo", (Vector2){32, 35}, 18, 0, WHITE);
         DrawTextEx(font, "Move/click the mouse; resize or press Esc", (Vector2){32, 65}, 12, 0, WHITE);
         DrawTextEx(font, TextFormat("%d x %d  |  mouse %.0f, %.0f",
                             GetScreenWidth(), GetScreenHeight(), mouse.x, mouse.y),

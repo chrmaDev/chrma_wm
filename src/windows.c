@@ -6,6 +6,7 @@
 #include "windows.h"
 #include "utils/vector.h"
 #include "cwm_server.h"
+#include "kms.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,9 @@ typedef struct {
     char *title;
     uint32_t id;
     uint8_t minimized;
+    uint8_t fullscreen;
+    uint8_t maximized;
+    rect2d normal_bounds;
 } window;
 
 static struct {
@@ -41,6 +45,7 @@ static struct {
     rect2d resize_preview;
     uint32_t next_id;
     uint32_t focused; /* window id, 0 = none */
+    uint32_t mouse_targets[3];
 } wm = { .next_id = 1 };
 
 static void put_u32be(uint8_t *p, uint32_t v)
@@ -84,6 +89,22 @@ static window *window_by_id(uint32_t id)
     return NULL;
 }
 
+static void window_focus(uint32_t id, int notify_new)
+{
+    window *old;
+    window *next;
+
+    if (wm.focused == id)
+        return;
+    old = window_by_id(wm.focused);
+    next = window_by_id(id);
+    if (old)
+        cwm_emit_input_event(old->fd, CWM_INPUT_EVENT_TYPE_FOCUS, 0, 0, 0, 0, 0);
+    wm.focused = id;
+    if (next && notify_new)
+        cwm_emit_input_event(next->fd, CWM_INPUT_EVENT_TYPE_FOCUS, 0, 1, 0, 0, 0);
+}
+
 static window *window_at_point(point2d p, size_t *index)
 {
     size_t i;
@@ -124,6 +145,8 @@ static void windows_on_removed(size_t i, uint32_t id)
     }
     if (wm.focused == id)
         wm.focused = 0;
+    for (size_t button = 0; button < 3; button++)
+        if (wm.mouse_targets[button] == id) wm.mouse_targets[button] = 0;
 }
 
 static void window_release(window *w)
@@ -253,7 +276,7 @@ int window_create_for_client(int client_fd, rect2d bounds, char *title, uint32_t
         window_release(&w);
         return -1;
     }
-    wm.focused = w.id;
+    window_focus(w.id, 0);
     if (window_id)
         *window_id = w.id;
     return w.shared_fd;
@@ -314,6 +337,9 @@ static rect2d window_client_rect(const window *w)
     int b = WINDOW_BORDER;
     rect2d r;
 
+    if (w->fullscreen)
+        return w->bounds;
+
     r.pos.x = w->bounds.pos.x + b;
     r.pos.y = w->bounds.pos.y + b;
     r.size.width = w->bounds.size.width - 2 * b;
@@ -355,17 +381,22 @@ static rect2d window_resize_grip_rect(const window *w)
 static void window_set_minimized(window *w, int minimized)
 {
     w->minimized = minimized ? 1 : 0;
+    cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_WINDOW_STATE,
+                         w->minimized ? CWM_WINDOW_MINIMIZE :
+                         w->fullscreen ? CWM_WINDOW_FULLSCREEN :
+                         w->maximized ? CWM_WINDOW_MAXIMIZE : CWM_WINDOW_RESTORE,
+                         0, 0, 0, 0);
     if (!w->minimized)
         return;
     if (wm.focused == w->id)
-        wm.focused = 0;
+        window_focus(0, 0);
     if (wm.grabbed == w->id) {
         wm.grabbed = 0;
         wm.grab_kind = GRAB_NONE;
     }
 }
 
-static void emit_mouse(window *w, point2d pos, uint8_t down)
+static void emit_mouse(window *w, point2d pos, uint8_t button, uint8_t down)
 {
     rect2d c = window_client_rect(w);
     int32_t x = pos.x - c.pos.x;
@@ -379,8 +410,30 @@ static void emit_mouse(window *w, point2d pos, uint8_t down)
         x = c.size.width - 1;
     if (c.size.height > 0 && y >= c.size.height)
         y = c.size.height - 1;
-    cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_MOUSE, 0, down, 0,
+    cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_MOUSE, 0, down, button,
                          (uint16_t)x, (uint16_t)y);
+}
+
+void windows_handle_mouse_button(point2d pos, uint8_t button, int down)
+{
+    window *w;
+
+    if (button < 1 || button > 2)
+        return;
+    if (down) {
+        size_t i;
+        w = window_at_point(pos, &i);
+        if (!w || w->minimized || !rect_contains(window_client_rect(w), pos))
+            return;
+        window_focus(w->id, 1);
+        windows_raise(i);
+        wm.mouse_targets[button] = w->id;
+    } else {
+        w = window_by_id(wm.mouse_targets[button]);
+        wm.mouse_targets[button] = 0;
+    }
+    if (w)
+        emit_mouse(w, pos, button, down);
 }
 
 static void emit_mouse_move(window *w, point2d pos)
@@ -424,8 +477,18 @@ void windows_handle_resize(int window_id, rect2d bounds)
         width = WINDOW_MIN_SIZE;
     if (height < WINDOW_MIN_SIZE)
         height = WINDOW_MIN_SIZE;
-    if (w->bounds.size.width == width && w->bounds.size.height == height)
-        return;
+    {
+        rect2d next = w->bounds;
+        rect2d inner;
+        next.size.width = width;
+        next.size.height = height;
+        inner = w->fullscreen ? next : (rect2d){next.pos,
+            {width - 2 * WINDOW_BORDER, height - 2 * WINDOW_BORDER}};
+        if (w->bounds.size.width == width && w->bounds.size.height == height &&
+            w->canvas && w->canvas->width == (uint32_t)inner.size.width &&
+            w->canvas->height == (uint32_t)inner.size.height)
+            return;
+    }
 
     w->bounds.size.width = width;
     w->bounds.size.height = height;
@@ -444,6 +507,71 @@ void windows_handle_resize(int window_id, rect2d bounds)
     cwm_send_fd(w->fd, CWM_PRT_TYPE_RESIZE_WINDOW, payload, CWM_RESIZE_PAYLOAD, w->shared_fd);
 }
 
+int window_set_title(int client_fd, uint32_t window_id, const char *title)
+{
+    window *w = window_by_id(window_id);
+    char *copy;
+
+    if (!w || w->fd != client_fd || !title)
+        return -1;
+    copy = strdup(title);
+    if (!copy) return -1;
+    free(w->title);
+    w->title = copy;
+    return 0;
+}
+
+int window_set_size(int client_fd, uint32_t window_id, uint32_t width, uint32_t height)
+{
+    window *w = window_by_id(window_id);
+    rect2d bounds;
+
+    if (!w || w->fd != client_fd || !width || !height ||
+        width > CWM_MAX_WINDOW_DIMENSION || height > CWM_MAX_WINDOW_DIMENSION)
+        return -1;
+    if (w->fullscreen || w->maximized) return 0;
+    bounds = w->bounds;
+    bounds.size.width = (int32_t)width + 2 * WINDOW_BORDER;
+    bounds.size.height = (int32_t)height + 2 * WINDOW_BORDER;
+    windows_handle_resize((int)window_id, bounds);
+    return 0;
+}
+
+int window_set_state(int client_fd, uint32_t window_id, enum cwmWindowState state)
+{
+    window *w = window_by_id(window_id);
+    rect2d bounds;
+
+    if (!w || w->fd != client_fd || state > CWM_WINDOW_FULLSCREEN)
+        return -1;
+    if (state == CWM_WINDOW_MINIMIZE) {
+        window_set_minimized(w, 1);
+        return 0;
+    }
+    if (w->minimized) window_set_minimized(w, 0);
+    if (state == CWM_WINDOW_RESTORE) {
+        if (w->fullscreen || w->maximized) {
+            w->fullscreen = 0;
+            w->maximized = 0;
+            bounds = w->normal_bounds;
+            w->bounds.pos = bounds.pos;
+            windows_handle_resize((int)window_id, bounds);
+        }
+    } else {
+        if (!w->fullscreen && !w->maximized)
+            w->normal_bounds = w->bounds;
+        w->fullscreen = state == CWM_WINDOW_FULLSCREEN;
+        w->maximized = state == CWM_WINDOW_MAXIMIZE;
+        bounds = (rect2d){{0, 0},
+            {get_width()/get_render_scale(), get_height()/get_render_scale()}};
+        w->bounds.pos = bounds.pos;
+        windows_handle_resize((int)window_id, bounds);
+    }
+    cwm_emit_input_event(w->fd, CWM_INPUT_EVENT_TYPE_WINDOW_STATE,
+                         state, 0, 0, 0, 0);
+    return 0;
+}
+
 void windows_handle_pointer(point2d pos, int pressed, int released)
 {
     window *w;
@@ -456,33 +584,33 @@ void windows_handle_pointer(point2d pos, int pressed, int released)
         wm.grab_kind = GRAB_NONE;
         w = window_at_point(pos, &i);
         if (!w) {
-            wm.focused = 0;
+            window_focus(0, 0);
             return;
         }
-        wm.focused = w->id;
+        window_focus(w->id, 1);
         windows_raise(i);
         w = window_by_id(wm.focused);
         if (!w)
             return;
-        if (rect_contains(window_close_rect(w), pos)) {
+        if (!w->fullscreen && rect_contains(window_close_rect(w), pos)) {
             cwm_send(w->fd, CWM_PRT_TYPE_CLOSE_WINDOW, NULL, 0);
             window_destroy((int)w->id);
             return;
         }
-        if (rect_contains(window_minimize_rect(w), pos)) {
+        if (!w->fullscreen && rect_contains(window_minimize_rect(w), pos)) {
             window_set_minimized(w, !w->minimized);
             return;
         }
         if (w->minimized)
             window_set_minimized(w, 0);
-        if (rect_contains(window_resize_grip_rect(w), pos)) {
+        if (!w->fullscreen && !w->maximized && rect_contains(window_resize_grip_rect(w), pos)) {
             wm.grabbed = w->id;
             wm.grab_kind = GRAB_RESIZE;
             resize_preview_from_point(w, pos);
         } else if (rect_contains(window_client_rect(w), pos)) {
             wm.grabbed = w->id;
             wm.grab_kind = GRAB_CLIENT;
-            emit_mouse(w, pos, 1);
+            emit_mouse(w, pos, 0, 1);
         } else {
             wm.grabbed = w->id;
             wm.grab_kind = GRAB_MOVE;
@@ -495,7 +623,7 @@ void windows_handle_pointer(point2d pos, int pressed, int released)
         if (wm.grab_kind == GRAB_CLIENT) {
             w = window_by_id(wm.grabbed);
             if (w)
-                emit_mouse(w, pos, 0);
+                emit_mouse(w, pos, 0, 0);
         } else if (wm.grab_kind == GRAB_RESIZE) {
             w = window_by_id(wm.grabbed);
             if (w) {
@@ -573,6 +701,12 @@ static void window_draw(pixmap *dst, window *w, font *f, pixmap *atlas)
     int bh = w->minimized ? WINDOW_BORDER : w->bounds.size.height;
     int b = WINDOW_BORDER;
     int focused = (w->id == wm.focused);
+
+    if (w->fullscreen && !w->minimized) {
+        if (w->canvas && w->canvas->data)
+            draw_buffer(dst, x, y, w->canvas);
+        return;
+    }
 
     blit_slice(dst, atlas, x, y, b, b, atlas_frame(WINDOW_TOP_LEFT, focused));
     blit_slice(dst, atlas, x + bw - b, y, b, b, atlas_frame(WINDOW_TOP_RIGHT, focused));

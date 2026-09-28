@@ -167,7 +167,7 @@ static void spawn_terminal(void)
     char path[4096];
 
     if (executable_path(path, sizeof(path), "ai/ct") < 0 || access(path, X_OK) < 0) {
-        fprintf(stderr, "cannot launch raylib ct; build it with make -C software/ai\n");
+        fprintf(stderr, "cannot launch raylib ct; build it with xmake build cwm\n");
         return;
     }
 
@@ -304,6 +304,14 @@ static void update(void)
     windows_handle_pointer(app.pos,
                            button_pressed(BUTTON_LEFT),
                            button_released(BUTTON_LEFT));
+    if (button_pressed(BUTTON_RIGHT))
+        windows_handle_mouse_button(app.pos, 1, 1);
+    if (button_released(BUTTON_RIGHT))
+        windows_handle_mouse_button(app.pos, 1, 0);
+    if (button_pressed(BUTTON_MIDDLE))
+        windows_handle_mouse_button(app.pos, 2, 1);
+    if (button_released(BUTTON_MIDDLE))
+        windows_handle_mouse_button(app.pos, 2, 0);
     if (ptr.scroll_x || ptr.scroll_y)
         windows_handle_wheel(app.pos, ptr.scroll_x, ptr.scroll_y);
 

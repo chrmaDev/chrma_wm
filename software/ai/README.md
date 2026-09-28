@@ -1,23 +1,34 @@
-# raylib software renderer on chrmaWM
+# Raylib on CWM and Wayland
 
-This is a chrmaWM adaptation of raylib 6.0's `PLATFORM_MEMORY` backend. The raylib source stays external; the build copies it into the ignored `build/ai/` directory and overlays `rcore_cwm.c`. The backend connects through `cwm_client`, reads raylib's software framebuffer directly into CWM's BGRA shared buffer, commits each frame, and translates keyboard, mouse, close, and resize events.
+Both builds use raylib 6.0 and the same application sources in this directory. The CWM build copies raylib's source into `build/ai/raylib-src`, replaces its memory backend with `rcore_cwm.c`, and draws into a CWM shared buffer. The Wayland build uses a separate source copy in `build/wayland/raylib-src` and raylib's desktop backend. Raylib's own Makefile builds those two libraries; xmake builds CWM and the applications.
 
-Get the raylib 6.0 source and build the demo:
+Put raylib 6.0 source at `/tmp/cwm-raylib-6.0`, or set `RAYLIB_SRC` to its directory. The Wayland build also needs Wayland, EGL, OpenGL, xkbcommon, and `wayland-scanner` development packages.
 
 ```sh
 git clone --depth 1 --branch 6.0 https://github.com/raysan5/raylib.git /tmp/cwm-raylib-6.0
-make -C software/ai RAYLIB_SRC=/tmp/cwm-raylib-6.0
-./build/ai/ct
+xmake build cwm
+xmake build demo_cwm
+xmake build ct_wayland
+xmake build demo_wayland
 ```
 
-Run `./build/main` on the VT first. CWM's Super shortcut launches `build/ai/ct`, so build the raylib port before using that shortcut. `./build/ai/demo` is also available as a small raylib drawing sample. For another application, use `build/ai/raylib-src/raylib.h` and `build/ai/raylib-src/libraylib.a`, and link `src/cwm_client.c`, `-lxkbcommon -lm -lpthread -ldl`.
+`xmake build cwm` creates `build/main` and `build/ai/ct`. Run CWM on a VT; its Super shortcut opens the CWM terminal. The demo binaries are `build/ai/demo` and `build/wayland/demo`. The Wayland terminal is `build/wayland/ct`. Each binary loads `assets/ct_font.qoi` beside its output directory.
 
-Both programs load ct's QOI font strip from `build/ai/assets/ct_font.qoi`. `LoadCtFont()` converts the magenta-separated fallback and ASCII glyphs into a raylib `Font`; call `UnloadFont()` when done. `build/ai/ct` is the raylib terminal. It shares the cell grid and VT parser in `software/ct/terminal.c` with the direct CWM terminal at `build/ct`, while raylib owns its drawing and keyboard input. The raylib terminal keeps Esc as a shell key; close its window to exit.
+`ct.c` shares its parser and drawing code across backends. Its CWM build reads the CWM key event queue; its Wayland build reads raylib's desktop key and text queues. The direct CWM renderer is still available as `xmake build ct_direct` and `build/ct`.
 
-The raylib terminal starts `$SHELL` interactively, falling back to `/bin/sh`, and advertises `xterm-256color`. Its scrollback keeps 1000 screen lines. Use the mouse wheel or Shift+PageUp/PageDown to browse, and Shift+End to return to the live screen. When an application requests SGR mouse reporting, clicks and wheel events go to that application instead. Resizing clears scrollback because the terminal does not reflow saved lines yet.
+The CWM and Wayland binaries can run at the same time in separate processes when both display sessions are available. Raylib chooses its platform backend at build time, so these are separate executables.
 
-The shared terminal core handles UTF-8 cell widths, 256-color and RGB SGR colors, character editing, and a separate screen for full-screen applications. The custom font still contains ASCII only; other characters occupy the correct number of cells but draw as simple ASCII fallbacks.
+## Dear ImGui demo on CWM
 
-CWM also supports Sticky Keys for Shift, Ctrl, and Alt in every client. Tap a modifier to apply it to the next key; tap it twice to lock it, then tap it again to unlock. Holding a modifier during a chord still works normally. Super keeps its CWM shortcut behavior.
+The Dear ImGui demo uses rlImGui's Raylib 6.0 release and Dear ImGui 1.92.7. Put their source trees at `/tmp/cwm-rlimgui` and `/tmp/cwm-imgui`, or set `RLIMGUI_SRC` and `IMGUI_SRC` to their directories.
 
-The CWM protocol currently supplies pointer movement, the left mouse button, and wheel scrolling; other buttons, clipboard, gamepads, and audio are outside this port. `SetWindowSize()` and other window management calls inherited from raylib's memory backend are stubs.
+```sh
+git clone --depth 1 --branch Raylib_6_0 https://github.com/raylib-extras/rlImGui.git /tmp/cwm-rlimgui
+git clone --depth 1 --branch v1.92.7 https://github.com/ocornut/imgui.git /tmp/cwm-imgui
+xmake build imgui_demo_cwm
+./build/ai/imgui_demo
+```
+
+Run the last command inside chrmaWM. The demo opens a small control panel and Dear ImGui's full demo window. Its text uses the `assets/ct_font.qoi` bitmap glyphs at their native 6-pixel height, with ImGui text colors. It uses the CWM raylib software renderer and requires no OpenGL context. CWM does not currently change the mouse cursor shape for ImGui controls.
+
+CWM provides left, right, and middle mouse buttons, wheel scrolling, focus changes, and basic window size, title, minimize, maximize, and fullscreen requests. The text clipboard is shared between CWM clients and accepts up to 1023 bytes. Gamepads, audio, and advanced window modes are outside this port.

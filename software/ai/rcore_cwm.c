@@ -110,7 +110,8 @@ bool WindowShouldClose(void)
 // Toggle fullscreen mode
 void ToggleFullscreen(void)
 {
-    TRACELOG(LOG_WARNING, "ToggleFullscreen() not available on target platform");
+    cwm_request_set_state(platform.windowId,
+        (CORE.Window.flags & FLAG_FULLSCREEN_MODE) ? CWM_WINDOW_RESTORE : CWM_WINDOW_FULLSCREEN);
 }
 
 // Toggle borderless windowed mode
@@ -122,31 +123,34 @@ void ToggleBorderlessWindowed(void)
 // Set window state: maximized, if resizable
 void MaximizeWindow(void)
 {
-    TRACELOG(LOG_WARNING, "MaximizeWindow() not available on target platform");
+    cwm_request_set_state(platform.windowId, CWM_WINDOW_MAXIMIZE);
 }
 
 // Set window state: minimized
 void MinimizeWindow(void)
 {
-    TRACELOG(LOG_WARNING, "MinimizeWindow() not available on target platform");
+    cwm_request_set_state(platform.windowId, CWM_WINDOW_MINIMIZE);
 }
 
 // Restore window from being minimized/maximized
 void RestoreWindow(void)
 {
-    TRACELOG(LOG_WARNING, "RestoreWindow() not available on target platform");
+    cwm_request_set_state(platform.windowId, CWM_WINDOW_RESTORE);
 }
 
 // Set window configuration state using flags
 void SetWindowState(unsigned int flags)
 {
-    TRACELOG(LOG_WARNING, "SetWindowState() not available on target platform");
+    if (flags & FLAG_FULLSCREEN_MODE) cwm_request_set_state(platform.windowId, CWM_WINDOW_FULLSCREEN);
+    else if (flags & FLAG_WINDOW_MAXIMIZED) MaximizeWindow();
+    else if (flags & FLAG_WINDOW_MINIMIZED) MinimizeWindow();
 }
 
 // Clear window configuration state flags
 void ClearWindowState(unsigned int flags)
 {
-    TRACELOG(LOG_WARNING, "ClearWindowState() not available on target platform");
+    if (flags & (FLAG_FULLSCREEN_MODE | FLAG_WINDOW_MAXIMIZED | FLAG_WINDOW_MINIMIZED))
+        RestoreWindow();
 }
 
 // Set icon for window
@@ -165,6 +169,7 @@ void SetWindowIcons(Image *images, int count)
 void SetWindowTitle(const char *title)
 {
     CORE.Window.title = title;
+    cwm_request_set_title(platform.windowId, title);
 }
 
 // Set window position on screen (windowed mode)
@@ -196,7 +201,7 @@ void SetWindowMaxSize(int width, int height)
 // Set window dimensions
 void SetWindowSize(int width, int height)
 {
-    TRACELOG(LOG_WARNING, "SetWindowSize() not available on target platform");
+    cwm_request_set_size(platform.windowId, width, height);
 }
 
 // Set window opacity, value opacity is between 0.0 and 1.0
@@ -298,15 +303,14 @@ Vector2 GetWindowScaleDPI(void)
 // Set clipboard text content
 void SetClipboardText(const char *text)
 {
-    TRACELOG(LOG_WARNING, "SetClipboardText() not implemented on target platform");
+    cwm_client_set_clipboard(text);
 }
 
 // Get clipboard text content
 // NOTE: returned string is allocated and freed by GLFW
 const char *GetClipboardText(void)
 {
-    TRACELOG(LOG_WARNING, "GetClipboardText() not implemented on target platform");
-    return NULL;
+    return cwm_client_get_clipboard();
 }
 
 // Get clipboard image
@@ -535,6 +539,30 @@ void PollInputEvents(void)
     while ((result = cwm_client_poll_event(&event)) > 0)
     {
         if (event.type == CWM_PRT_TYPE_CLOSE_WINDOW) CORE.Window.shouldClose = true;
+        else if (event.type == CWM_INPUT_EVENT_TYPE_WINDOW_STATE)
+        {
+            CORE.Window.flags &= ~(FLAG_WINDOW_MINIMIZED | FLAG_WINDOW_MAXIMIZED | FLAG_FULLSCREEN_MODE);
+            if (event.keycode == CWM_WINDOW_MINIMIZE) CORE.Window.flags |= FLAG_WINDOW_MINIMIZED;
+            if (event.keycode == CWM_WINDOW_MAXIMIZE) CORE.Window.flags |= FLAG_WINDOW_MAXIMIZED;
+            if (event.keycode == CWM_WINDOW_FULLSCREEN) CORE.Window.flags |= FLAG_FULLSCREEN_MODE;
+        }
+        else if (event.type == CWM_INPUT_EVENT_TYPE_FOCUS)
+        {
+            if (event.down) CORE.Window.flags &= ~FLAG_WINDOW_UNFOCUSED;
+            else
+            {
+                CORE.Window.flags |= FLAG_WINDOW_UNFOCUSED;
+                memset(CORE.Input.Keyboard.currentKeyState, 0, sizeof(CORE.Input.Keyboard.currentKeyState));
+                memset(CORE.Input.Keyboard.previousKeyState, 0, sizeof(CORE.Input.Keyboard.previousKeyState));
+                memset(platform.heldKeys, 0, sizeof(platform.heldKeys));
+                memset(CORE.Input.Mouse.currentButtonState, 0, sizeof(CORE.Input.Mouse.currentButtonState));
+                platform.keyEventCount = platform.keyEventRead = 0;
+                CORE.Input.Keyboard.keyPressedQueueCount = 0;
+                CORE.Input.Keyboard.charPressedQueueCount = 0;
+                if (platform.xkbState) xkb_state_unref(platform.xkbState);
+                platform.xkbState = platform.xkbKeymap ? xkb_state_new(platform.xkbKeymap) : NULL;
+            }
+        }
         else if (event.type == CWM_INPUT_EVENT_TYPE_RESIZE)
         {
             int width = cwm_client_width();
@@ -549,7 +577,7 @@ void PollInputEvents(void)
         {
             CORE.Input.Mouse.currentPosition = (Vector2){ (float)event.x, (float)event.y };
             if (event.type == CWM_INPUT_EVENT_TYPE_MOUSE)
-                CORE.Input.Mouse.currentButtonState[MOUSE_BUTTON_LEFT] = event.down;
+                CORE.Input.Mouse.currentButtonState[event.button] = event.down;
         }
         else if (event.type == CWM_INPUT_EVENT_TYPE_MOUSE_WHEEL)
         {

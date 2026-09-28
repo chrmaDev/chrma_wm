@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include "types.h"
-#define CWM_PROTOCOL_VERSION 1
+#define CWM_PROTOCOL_VERSION 2
 #define CWM_SOCKET_PATH "/tmp/cwm.sock"
 #define CWM_MAX_WINDOW_DIMENSION 4096
 #define CWM_MAX_WINDOW_COORDINATE 32767
@@ -14,7 +14,18 @@ enum cwmInputEventType {
     CWM_INPUT_EVENT_TYPE_RESIZE = 2,
     CWM_INPUT_EVENT_TYPE_MOUSE_MOVE = 3,
     CWM_INPUT_EVENT_TYPE_MOUSE_WHEEL = 4,
+    CWM_INPUT_EVENT_TYPE_FOCUS = 5,
+    CWM_INPUT_EVENT_TYPE_WINDOW_STATE = 6,
 };
+
+enum cwmWindowState {
+    CWM_WINDOW_RESTORE = 0,
+    CWM_WINDOW_MINIMIZE = 1,
+    CWM_WINDOW_MAXIMIZE = 2,
+    CWM_WINDOW_FULLSCREEN = 3,
+};
+
+#define CWM_CLIPBOARD_MAX 1024
 
 enum cwmRenderScale {
     CWM_RENDER_NATIVE = 0,
@@ -30,6 +41,11 @@ enum cwmProtocolMessageType {
     CWM_PRT_TYPE_INPUT_EVENT = 6,
     CWM_PRT_TYPE_RESIZE_WINDOW = 7,
     CWM_PRT_TYPE_CLOSE_WINDOW = 8,
+    CWM_PRT_TYPE_SET_WINDOW_TITLE = 9,
+    CWM_PRT_TYPE_SET_WINDOW_SIZE = 10,
+    CWM_PRT_TYPE_SET_WINDOW_STATE = 11,
+    CWM_PRT_TYPE_SET_CLIPBOARD = 12,
+    CWM_PRT_TYPE_CLIPBOARD_UPDATE = 13,
 };
 
 /* Wire: type:u8, length:u32be, payload[length]. One SEQPACKET record. */

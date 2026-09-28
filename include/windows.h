@@ -1,6 +1,7 @@
 #ifndef WINDOWS_H
 #define WINDOWS_H
 
+#include "cwm_protocol.h"
 #include "rendering.h"
 #include "types.h"
 #include "utils/font.h"
@@ -24,6 +25,7 @@
 int windows_init(void);
 void windows_cleanup(void);
 void windows_handle_pointer(point2d pos, int pressed, int released);
+void windows_handle_mouse_button(point2d pos, uint8_t button, int down);
 void windows_handle_wheel(point2d pos, int horizontal, int vertical);
 void windows_handle_keyboard(uint32_t keycode, uint8_t down);
 void windows_handle_resize(int window_id, rect2d bounds);
@@ -32,5 +34,8 @@ int window_create_for_client(int client_fd, rect2d bounds, char *title, uint32_t
 void window_destroy(int window_id);
 int window_destroy_for_client(int client_fd, uint32_t window_id);
 int window_owned_by_client(int client_fd, uint32_t window_id);
+int window_set_title(int client_fd, uint32_t window_id, const char *title);
+int window_set_size(int client_fd, uint32_t window_id, uint32_t width, uint32_t height);
+int window_set_state(int client_fd, uint32_t window_id, enum cwmWindowState state);
 void windows_destroy_all_for_client(int client_fd);
 #endif
